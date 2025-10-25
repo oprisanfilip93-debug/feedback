@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ro">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Rating — Make-up Artist</title>
+  <style>
+    body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; padding:24px; max-width:720px; margin:0 auto; color:#222; }
+    h1 { font-size:20px; margin-bottom:8px; }
+    .card { border-radius:12px; padding:18px; box-shadow:0 6px 18px rgba(0,0,0,0.06); background:#fff; }
+    .stars { display:flex; gap:6px; font-size:32px; cursor:pointer; }
+    .star { user-select:none; }
+    textarea { width:100%; min-height:90px; margin-top:8px; padding:10px; border-radius:8px; border:1px solid #ddd; resize:vertical; }
+    label.small { font-size:13px; color:#555; display:block; margin-top:8px; }
+    button { margin-top:12px; padding:10px 14px; border-radius:10px; border:0; background:#111; color:#fff; cursor:pointer; }
+    .qr { margin-top:14px; display:flex; gap:12px; align-items:center; }
+    .hidden { display:none; }
+    .thanks { margin-top:12px; color:green; }
+    .center { text-align:center; }
+    .muted { color:#666; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Spune-mi cum ți-a plăcut serviciul ✨</h1>
+    <p class="muted">Scanează QR-ul sau folosește această pagină pentru a-mi lăsa un rating — durează câteva secunde.</p>
+
+    <div id="widget">
+      <div>
+        <div class="label"><strong>Rating</strong></div>
+        <div id="stars" class="stars" aria-label="Rating 1 până la 5 stele" role="radiogroup">
+          <span class="star" data-value="1" title="1">☆</span>
+          <span class="star" data-value="2" title="2">☆</span>
+          <span class="star" data-value="3" title="3">☆</span>
+          <span class="star" data-value="4" title="4">☆</span>
+          <span class="star" data-value="5" title="5">☆</span>
+        </div>
+      </div>
+
+      <label class="small">Comentariu (opțional)</label>
+      <textarea id="comment" placeholder="Mulțumesc pentru serviciu!"></textarea>
+
+      <label class="small">Nume (opțional)</label>
+      <input id="clientName" placeholder="Ex: Maria" style="width:100%; padding:8px; border-radius:8px; border:1px solid #ddd;" />
+
+      <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+        <button id="submitBtn">Trimite feedback</button>
+        <div id="status" class="muted"></div>
+      </div>
+
+      <div id="after" class="hidden">
+        <div class="thanks">Mulțumesc — feedback-ul tău a fost înregistrat! ❤️</div>
+      </div>
+
+      <hr style="margin:14px 0" />
+
+      <div>
+        <div class="muted">QR pentru această pagină (folosește-l pe carduri, facturi, sticker):</div>
+        <div class="qr">
+          <img id="qrcode" alt="QR code" width="160" height="160" />
+          <div style="font-size:13px;">
+            <div>Scanează pentru a deschide această pagină:</div>
+            <div id="pageUrl" style="word-break:break-all; max-width:320px;"></div>
+            <div style="margin-top:6px;"><button id="copyBtn">Copiază link</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div style="margin-top:10px;" class="muted">
+      Poți integra acest formular direct într-o pagină a site-ului (iframe) sau folosi doar linkul/QR. Vezi instrucțiunile din comentariile <em>script</em>.
+    </div>
+  </div>
+
+  <script>
+  /*******************************************************************
+   * CONFIG:
+   * - Dacă vrei ca feedback-urile să fie trimise automat într-un formular
+   *   extern (Formspree, Make, Zapier, Google Apps Script etc), completează
+   *   WEBHOOK_URL cu endpoint-ul tău.
+   *
+   * Exemple:
+   *  - Formspree: "https://formspree.io/f/...." (vei primi un URL când creezi formularul)
+   *  - Make / Zapier Webhook: URL-ul webhook-ului generat de platforma respectivă
+   *  - Google Apps Script: URL-ul webapp (doGet/doPost) public
+   *
+   * Dacă lași WEBHOOK_URL = "" atunci datele se vor păstra local în browser (localStorage).
+   *******************************************************************/
+  const WEBHOOK_URL = ""; // ← pune URL webhook aici dacă vrei POST automat
+  /*******************************************************************/
+
+  // Utility: encode data for posting as application/json
+  async function postData(url, payload) {
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      return r;
+    } catch (e) {
+      console.error('POST error', e);
+      throw e;
+    }
+  }
+
+  // Rating UI
+  const stars = document.querySelectorAll('.star');
+  let currentRating = 0;
+  stars.forEach(s => {
+    s.addEventListener('click', () => {
+      currentRating = Number(s.dataset.value);
+      updateStars();
+    });
+    s.addEventListener('mouseover', () => {
+      const v = Number(s.dataset.value);
+      highlight(v);
+    });
+    s.addEventListener('mouseout', () => updateStars());
+  });
+  function highlight(v){
+    stars.forEach(s => { s.textContent = Number(s.dataset.value) <= v ? '★' : '☆'; });
+  }
+  function updateStars(){
+    stars.forEach(s => { s.textContent = Number(s.dataset.value) <= currentRating ? '★' : '☆'; });
+  }
+
+  // QR generation: we'll use a public QR API endpoint to create an image that points to this page's public URL.
+  // When hostezi această pagină, înlocuirea pageURL va actualiza QR-ul.
+  function updateQRCodeFor(url){
+    const api = 'https://api.qrserver.com/v1/create-qr-code/';
+    const size = '300x300';
+    const src = api + '?size=' + size + '&data=' + encodeURIComponent(url);
+    document.getElementById('qrcode').src = src;
+    document.getElementById('pageUrl').textContent = url;
+  }
+
+  // When the page is loaded as a hosted file, its canonical URL is window.location.href.
+  // If you open the file locally (file://) the QR won't be useful — urcă-l la un host și folosește acel URL.
+  function getPublicUrlHint(){
+    // if loaded from file:// or from localhost, show placeholder text
+    const href = window.location.href;
+    if (href.startsWith('file:') || href.includes('127.0.0.1') || href.includes('localhost')) {
+      return 'Pune aici URL-ul paginii după ce o publici, ex: https://numele-tau.github.io/feedback.html';
+    }
+    return href;
+  }
+
+  // Init QR with best guess
+  const pageUrlDisplay = getPublicUrlHint();
+  updateQRCodeFor(pageUrlDisplay);
+
+  // Copy button
+  document.getElementById('copyBtn').addEventListener('click', async () => {
+    const txt = document.getElementById('pageUrl').textContent;
+    try {
+      await navigator.clipboard.writeText(txt);
+      alert('Link copiat în clipboard!');
+    } catch (e) {
+      prompt('Copiază manual linkul:', txt);
+    }
+  });
+
+  // Submit handling
+  document.getElementById('submitBtn').addEventListener('click', async () => {
+    const comment = document.getElementById('comment').value.trim();
+    const name = document.getElementById('clientName').value.trim();
+    const rating = currentRating;
+    if (!rating) {
+      alert('Te rog alege un rating (1–5 stele).');
+      return;
+    }
+    const payload = {
+      rating,
+      comment,
+      name,
+      page: window.location.href,
+      ts: (new Date()).toISOString(),
+      userAgent: navigator.userAgent
+    };
+
+    document.getElementById('status').textContent = 'Se trimite...';
+
+    if (WEBHOOK_URL) {
+      try {
+        const res = await postData(WEBHOOK_URL, payload);
+        if (res.ok || res.status === 0) { // status 0 dacă cross-origin sau dev
+          showThanks();
+        } else {
+          // Some services expect form-encoded data, not JSON. We'll still show an error with status.
+          document.getElementById('status').textContent = 'Eroare la trimitere: ' + res.status;
+          console.error('Response', res);
+        }
+      } catch (e) {
+        document.getElementById('status').textContent = 'Eroare de rețea / endpoint.';
+      }
+    } else {
+      // No webhook configured — save locally as fallback
+      try {
+        const existing = JSON.parse(localStorage.getItem('feedbacks') || '[]');
+        existing.push(payload);
+        localStorage.setItem('feedbacks', JSON.stringify(existing));
+        showThanks();
+      } catch (e) {
+        document.getElementById('status').textContent = 'Eroare salvare locală.';
+      }
+    }
+  });
+
+  function showThanks(){
+    document.getElementById('status').textContent = '';
+    document.getElementById('after').classList.remove('hidden');
+    // Clear fields (optional)
+    currentRating = 0; updateStars();
+    document.getElementById('comment').value = '';
+    document.getElementById('clientName').value = '';
+  }
+
+  // If you want to embed this widget in alt site as <iframe src="..."> use:
+  // <iframe src="https://.../feedback.html" width="420" height="560" style="border:0;border-radius:12px;"></iframe>
+
+  // If you want to collect results in Google Sheets: create a Google Apps Script web app that accepts POST JSON,
+  // then put its URL into WEBHOOK_URL. Similarly for Formspree/Make/Zapier.
+  </script>
+</body>
+</html>
